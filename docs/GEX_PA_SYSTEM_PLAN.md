@@ -2,7 +2,7 @@
 ## 設計・実装ログ
 
 > 最終更新：2026-02-21  
-> ステータス：**Phase 0 — 設計確定 / 実装未着手**
+> ステータス：**Phase 1 進行中 — Step 2完了**
 
 ---
 
@@ -117,6 +117,7 @@ Mac（演算エンジン）
 | U-4 | Saxo OpenAPIのレート制限（詳細） | 🟡 中 | ドキュメント確認 + 実測 |
 | U-5 | OHLCヒストリカルデータ（`/chart/v1/charts`）の取得可能期間 | 🟡 中 | 実接続確認。取れなければシステム稼働後に蓄積 |
 | U-6 | ConfluenceDetectorのスコア重み（要バックテスト） | 🟢 低 | システム稼働後にデータ蓄積して調整 |
+| U-7 | ダークプールデータの統合（補助ファクター） | 🟢 低 | Phase 4以降。Massive.com Stocks Developer $79/月。ConfluenceDetectorのWEIGHTSに予約枠のみ追加済み |
 
 ---
 
@@ -168,8 +169,8 @@ engine/
 │   ├── confluence.py         # ConfluenceDetector← Step 4で実装
 │   └── scheduler.py          # MainOrchestrator  ← Step 5で統合
 ├── models/
-│   ├── option_chain.py       # OptionChain, OptionLeg（dataclass）
-│   ├── gex_snapshot.py       # GEXSnapshot（dataclass）
+│   ├── option_chain.py       # ✅ OptionChain, OptionLeg（dataclass）
+│   ├── gex_snapshot.py       # ✅ GEXSnapshot（dataclass）
 │   └── pa_signal.py          # PASignal, PALayer, Timeframe, PatternType
 ├── output/
 │   ├── github_publisher.py   # 5分毎バッチPush
@@ -202,9 +203,9 @@ engine/
 - [x] PAの多層コンフルエンス設計（乗算モデル）
 - [x] 100ストライク制限の影響評価
 
-### Phase 1：GEXエンジン単体（次のステップ）
-- [ ] **Step 1**：`models/option_chain.py` — データクラス定義
-- [ ] **Step 2**：`models/gex_snapshot.py` — 計算結果クラス定義
+### Phase 1：GEXエンジン単体（🔄 進行中）
+- [x] **Step 1**：`models/option_chain.py` — OptionChain / OptionLeg dataclass定義
+- [x] **Step 2**：`models/gex_snapshot.py` — 計算結果クラス定義
 - [ ] **Step 3**：`core/gex_engine.py` — BS計算・GEXプロファイル・Wall検出
 - [ ] **Step 4**：GEXEngineの単体テスト（モックデータで動作確認）
 
@@ -241,7 +242,13 @@ engine/
 | Phase | ステータス | 完了日 | メモ |
 |-------|-----------|--------|------|
 | Phase 0：設計確定 | ✅ 完了 | 2026-02-21 | |
-| Phase 1：GEXエンジン単体 | 🔲 未着手 | — | 次のステップ |
+| Phase 1：GEXエンジン単体 | 🔄 進行中 | — | Step 2完了 / Step 3着手待ち |
+
+### Step完了ログ
+| Step | ファイル | 完了日 | 備考 |
+|------|---------|--------|------|
+| Step 1 | `engine/models/option_chain.py` | 2026-02-21 | OptionChain / OptionLeg dataclass。BSフォールバック対応済み |
+| Step 2 | `engine/models/gex_snapshot.py` | 2026-02-22 | GEXSnapshot / WallLevel / GammaCondition。to_json()でTradingView配信形式に対応 |
 | Phase 2：Saxo API接続 | 🔲 未着手 | — | U-1〜U-3の確認が必要 |
 | Phase 3：PAエンジン | 🔲 未着手 | — | |
 | Phase 4：統合・出力 | 🔲 未着手 | — | |
