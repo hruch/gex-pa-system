@@ -298,4 +298,56 @@ engine/
 
 ---
 
+---
+
+## 11. 参考コード・技術ナレッジ
+
+### 11-1. Saty Pivot Ribbon（TradingView Pine Script V5）
+**出典**: Saty Mahajan, 2022-2025  
+**用途**: Step 19（Pine Script実装）時の技術参照
+
+#### ① Time Warp（`request.security`でマルチタイムフレーム取得）
+```javascript
+// 現在チャートと異なる時間足のデータを取得するパターン
+price = request.security(ticker, timeframe_func(), close, 
+        gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+```
+**転用先**: PA9層のTradingView側補完。GEXキーレベルは別足で計算したデータを受け取る際に使用。
+
+#### ② Wall Touchアラートの実装パターン（Conviction Arrowsより）
+```javascript
+// クロスの瞬間だけを検出（再描画しない）
+bullish_confirmed = condition[0] == true and condition[1] == false
+
+// GEX Wall Touchへの応用例
+near_call_wall  = math.abs(close - call_wall_level) / close < 0.003
+touch_call_wall = near_call_wall[0] == true and near_call_wall[1] == false
+plotshape(touch_call_wall, style=shape.triangledown, 
+          color=color.red, location=location.abovebar)
+```
+**転用先**: Call Wall / Put Wall / ZeroGammaのタッチ瞬間を検出するアラートロジック。
+
+#### ③ リアルタイムバー再描画防止
+```javascript
+// リアルタイムバーでは1本前の確定値を使う
+ta.ema(price, length)[barstate.isrealtime ? 1 : 0]
+```
+**転用先**: Macから送られるGEXレベルをプロットする際に必須。これを怠るとアラートが再描画される。
+
+#### ④ GEX環境によるローソク色変え（Candle Biasより）
+```javascript
+// GEX POSITIVE/NEGATIVEでローソク色を変える実装例
+gex_candle_color =
+    gamma_positive and close > open ? color.green :
+    gamma_positive and close < open ? color.new(color.green, 60) :
+    gamma_negative and close > open ? color.new(color.red, 60) :
+    gamma_negative and close < open ? color.red :
+    color.gray
+plotcandle(open, high, low, close, color=gex_candle_color,
+           bordercolor=gex_candle_color, wickcolor=gex_candle_color)
+```
+**転用先**: Step 19でGEX環境の視覚化に直接使用。
+
+---
+
 *このファイルはセッション開始時に必ず参照し、決定事項を追記・更新していく。*

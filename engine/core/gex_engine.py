@@ -122,6 +122,7 @@ class GEXEngine:
 
         # --- Step 2: Greeksフォールバック ---
         df = self._fill_greeks_fallback(df, chain.spot)
+        self._last_df = df  # ZeroGamma拡張探索用に保持
 
         # --- Step 3: Spot GEX計算 ---
         df = self._calc_spot_gex(df, chain.spot)
@@ -314,18 +315,47 @@ class GEXEngine:
         Gamma Flip Pointの線形補間。
         gamma.py L188-196のロジックを関数化。
         符号が反転するゼロクロス点を検出。
+
+        修正（v2）:
+          ±10%レンジ内にゼロクロスが見つからない場合、
+          ±25%の拡張レンジで再計算する。
+          それでも見つからない場合は「完全Positive/Negative環境」と判断し、
+          GEXが最もゼロに近いレベルをGamma Flipの推定値として返す。
         """
         zero_cross_idx = np.where(np.diff(np.sign(gex_arr)))[0]
 
         if len(zero_cross_idx) == 0:
-            # ゼロクロスなし → レンジの端（完全Positive or Negative環境）
-            logger.warning("[GEXEngine] No zero gamma crossing found")
-            return float(levels[np.argmin(np.abs(gex_arr))])
+            logger.warning(
+                "[GEXEngine] No zero gamma crossing in ±10% range. "
+                "Expanding search to ±25%..."
+            )
+            spot = float(levels[len(levels) // 2])  # レンジ中央 ≈ spot
+            wide_levels = np.linspace(spot * 0.75, spot * 1.25, 500)
+            wide_gex = self._calc_gex_at_levels(self._last_df, wide_levels)
+            wide_cross = np.where(np.diff(np.sign(wide_gex)))[0]
 
-        # 最初のゼロクロスを採用（複数ある場合はATM最寄り）
-        idx = zero_cross_idx[0]
-        neg_gamma = gex_arr[idx]
-        pos_gamma = gex_arr[idx + 1]
+            if len(wide_cross) == 0:
+                # 完全にPositive or Negative → GEXが最小絶対値の点を返す
+                logger.warning(
+                    "[GEXEngine] No zero gamma found in ±25% range. "
+                    "Market is in strong directional gamma environment."
+                )
+                return float(wide_levels[np.argmin(np.abs(wide_gex))])
+
+            levels    = wide_levels
+            gex_arr   = wide_gex
+            zero_cross_idx = wide_cross
+
+        # スポットに最も近いゼロクロスを採用
+        spot_approx = float(levels[len(levels) // 2])
+        closest_idx = min(
+            zero_cross_idx,
+            key=lambda i: abs(levels[i] - spot_approx)
+        )
+        idx = closest_idx
+
+        neg_gamma  = gex_arr[idx]
+        pos_gamma  = gex_arr[idx + 1]
         neg_strike = levels[idx]
         pos_strike = levels[idx + 1]
 
@@ -335,46 +365,91 @@ class GEXEngine:
         )
         return float(zero_gamma)
 
+    def _calc_notional_gex(self, df):
+        """
+        各ストライクの「潜在GEX（Notional GEX）」を計算。
+
+        S = K（その価格に達した時のガンマ）で計算するのが業界標準。
+        SpotGammaなど主要GEXプロバイダーと同一の手法。
+
+        スポット価格ベース（Spot GEX）との違い:
+          Spot GEX    → 「今の価格での各ストライクの影響」
+          Notional GEX → 「その価格に達した時の潜在的な壁の強さ」
+          → Call Wall / Put Wall検出にはNotional GEXが正しい
+        """
+        K   = df["strike"].values
+        T   = np.maximum(df["days_to_expiry"].values, 1 / 1440)
+
+        iv_call = df["call_iv"].values
+        iv_put  = df["put_iv"].values
+        oi_call = df["call_effective_oi"].values
+        oi_put  = df["put_effective_oi"].values
+
+        # S=K でガンマを計算（ATMガンマが最大になる）
+        gamma_call = np.where(
+            iv_call > 0, self._bs_gamma(K, K, iv_call, T), 0.0
+        )
+        gamma_put = np.where(
+            iv_put > 0, self._bs_gamma(K, K, iv_put, T), 0.0
+        )
+
+        call_notional = gamma_call * oi_call * 100 * K * K * 0.01
+        put_notional  = gamma_put  * oi_put  * 100 * K * K * 0.01 * -1
+
+        return call_notional, put_notional
+
     def _find_call_wall(self, df, spot: float) -> WallLevel:
         """
-        最大Call GEX集積ストライク（スポット上方）= Call Wall（赤・抵抗）
-        スポット上方のみを対象にする。
+        最大Call Notional GEX集積ストライク = Call Wall（赤・抵抗）
+
+        修正（v2）: S=K のNotional GEXを使用。
+        スポット上方のみを対象。
         """
-        above = df[df["strike"] >= spot].copy()
+        call_notional, _ = self._calc_notional_gex(df)
+        df = df.copy()
+        df["call_notional"] = call_notional
+
+        above = df[df["strike"] >= spot]
         if above.empty:
-            above = df.copy()
+            above = df
 
-        by_strike = above.groupby("strike")["call_gex"].sum()
-        total_call_gex = df["call_gex"].sum()
+        by_strike = above.groupby("strike")["call_notional"].sum()
+        total_call = df["call_notional"].sum()
 
-        if by_strike.empty or total_call_gex == 0:
+        if by_strike.empty or total_call == 0:
             return WallLevel(spot, 0.0, 0.0, WallStrength.WEAK, "CALL")
 
         max_strike = float(by_strike.idxmax())
         max_val    = float(by_strike.max()) / 1e9
-        ratio      = float(by_strike.max()) / total_call_gex if total_call_gex > 0 else 0.0
+        ratio      = float(by_strike.max()) / total_call
 
         strength = self._classify_wall_strength(ratio)
         return WallLevel(max_strike, max_val, ratio, strength, "CALL")
 
     def _find_put_wall(self, df, spot: float) -> WallLevel:
         """
-        最大Put GEX集積ストライク（スポット下方）= Put Wall（緑・支持）
-        PutGEXは負値なので絶対値で最大を取る。
+        最大Put Notional GEX集積ストライク = Put Wall（緑・支持）
+
+        修正（v2）: S=K のNotional GEXを使用。
+        スポット下方のみを対象。
         """
-        below = df[df["strike"] <= spot].copy()
+        _, put_notional = self._calc_notional_gex(df)
+        df = df.copy()
+        df["put_notional"] = put_notional
+
+        below = df[df["strike"] <= spot]
         if below.empty:
-            below = df.copy()
+            below = df
 
-        by_strike = below.groupby("strike")["put_gex"].sum().abs()
-        total_put_gex = df["put_gex"].sum()
+        by_strike = below.groupby("strike")["put_notional"].sum().abs()
+        total_put = abs(df["put_notional"].sum())
 
-        if by_strike.empty or total_put_gex == 0:
+        if by_strike.empty or total_put == 0:
             return WallLevel(spot, 0.0, 0.0, WallStrength.WEAK, "PUT")
 
         max_strike = float(by_strike.idxmax())
         max_val    = float(by_strike.max()) / 1e9
-        ratio      = float(by_strike.max()) / abs(total_put_gex) if total_put_gex != 0 else 0.0
+        ratio      = float(by_strike.max()) / total_put
 
         strength = self._classify_wall_strength(ratio)
         return WallLevel(max_strike, max_val, ratio, strength, "PUT")
